@@ -1,5 +1,6 @@
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/lib/auth";
+import { canViewAnalytics } from "@/lib/analytics-access";
 import { 
   LayoutDashboard, 
   Package, 
@@ -10,6 +11,7 @@ import {
   X,
   MapPin,
   Zap
+  , BarChart3
 } from "lucide-react";
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
@@ -43,6 +45,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
     { name: 'Location', href: '/location', icon: MapPin },
     { name: 'History', href: '/history', icon: History },
     { name: 'Profile', href: '/profile', icon: User },
+    ...(canViewAnalytics(user?.email) ? [{ name: 'Analytics', href: '/analytics', icon: BarChart3 }] : []),
   ];
 
   const SidebarContent = () => (

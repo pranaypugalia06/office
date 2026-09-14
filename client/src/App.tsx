@@ -4,7 +4,7 @@ import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { AuthProvider, ProtectedRoute } from "@/lib/auth";
+import { AuthProvider, AnalyticsRoute, ProtectedRoute } from "@/lib/auth";
 import NotFound from "@/pages/not-found";
 
 const Login = withLazyPage(lazy(() => import("@/pages/login")));
@@ -13,6 +13,7 @@ const ProcessPage = withLazyPage(lazy(() => import("@/pages/process")));
 const LocationPage = withLazyPage(lazy(() => import("@/pages/location")));
 const HistoryPage = withLazyPage(lazy(() => import("@/pages/history")));
 const Profile = withLazyPage(lazy(() => import("@/pages/profile")));
+const AnalyticsPage = withLazyPage(lazy(() => import("@/pages/analytics")));
 
 function PageLoader() {
   return (
@@ -50,6 +51,9 @@ function Router() {
       </Route>
       <Route path="/profile">
         <ProtectedRoute component={Profile} />
+      </Route>
+      <Route path="/analytics">
+        <AnalyticsRoute component={AnalyticsPage} />
       </Route>
       <Route component={NotFound} />
     </Switch>

@@ -9,6 +9,7 @@ import {
 import { doc, getDoc } from "firebase/firestore";
 import { auth, db } from "./firebase";
 import { useToast } from "@/hooks/use-toast";
+import { canViewAnalytics } from "./analytics-access";
 
 interface User {
   uid: string;
@@ -197,6 +198,21 @@ export function ProtectedRoute({ component: Component }: { component: React.Comp
   }
 
   if (!user) return null;
+
+  return <Component />;
+}
+
+export function AnalyticsRoute({ component: Component }: { component: React.ComponentType<any> }) {
+  const { user, loading } = useAuth();
+  const [, setLocation] = useLocation();
+
+  useEffect(() => {
+    if (!loading && (!user || !canViewAnalytics(user.email))) {
+      setLocation("/");
+    }
+  }, [user, loading, setLocation]);
+
+  if (loading || !user || !canViewAnalytics(user.email)) return null;
 
   return <Component />;
 }
