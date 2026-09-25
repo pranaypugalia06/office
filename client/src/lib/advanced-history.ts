@@ -1159,15 +1159,7 @@ export async function saveAdvancedGroupEdit(input: EditableGroupInput) {
           : type === "office_transfer_created"
           ? "factoryBalance"
           : "officeBalance",
-      previousBalance: 0,
-      balance: 0,
       locationId: null,
-      previousHTBalance: 0,
-      previousFABalance: 0,
-      previousOFBalance: 0,
-      newHTBalance: 0,
-      newFABalance: 0,
-      newOFBalance: 0,
     };
 
     if (input.type === "process") {
@@ -1265,8 +1257,11 @@ export async function saveAdvancedGroupEdit(input: EditableGroupInput) {
       const stockItem = context.stockItems.find((item) => toItemKey(item.name, item.category) === itemKey);
       if (!stockItem) continue;
 
-      const finalBalances = mutableBalancesByItemId.get(stockItem.id);
-      if (!finalBalances) continue;
+      const finalBalances = getMutableBalances(stockItem);
+      const staleDelta = getTransactionBalanceDelta(staleTx);
+      finalBalances.ht = Math.max(0, finalBalances.ht + staleDelta.ht);
+      finalBalances.fa = Math.max(0, finalBalances.fa + staleDelta.fa);
+      finalBalances.of = Math.max(0, finalBalances.of + staleDelta.of);
 
       staleItemIds.add(stockItem.id);
       staleItemsByKey.set(itemKey, {
@@ -1485,6 +1480,23 @@ export async function recalculateAdvancedStateOptimized(
       lastUpdated: Timestamp.now(),
     });
   }
+
+  const auditUpdates = replayRows
+    .filter((replay) => shouldFullRecalc || itemsToCheck.has(replay.itemKey))
+    .map(({ tx, data }) =>
+      updateDoc(doc(db, "transactions", tx.id), {
+        previousBalance: data.previousBalance,
+        balance: data.balance,
+        previousHTBalance: data.previousHTBalance,
+        previousFABalance: data.previousFABalance,
+        previousOFBalance: data.previousOFBalance,
+        newHTBalance: data.newHTBalance,
+        newFABalance: data.newFABalance,
+        newOFBalance: data.newOFBalance,
+      })
+    );
+
+  await Promise.all(auditUpdates);
 
   await rebuildHeatTreatmentProcessDocs(
     context,
