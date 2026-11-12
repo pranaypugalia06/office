@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
-import { hasReplayStartingBaseline, replayBalanceHistory } from "../client/src/lib/history-replay";
+import {
+  hasReplayStartingBaseline,
+  findNewOrWorsenedNegativeBalanceReplayEntry,
+  replayBalanceHistory,
+  sortAuditRowsByActualTime,
+} from "../client/src/lib/history-replay";
 import type { Transaction } from "../client/src/lib/types";
 
 const transactions: Transaction[] = [
@@ -82,6 +87,181 @@ assert.deepEqual(heatTreatmentReplay.after, { ht: 216, fa: 0, of: 0 });
 assert.equal(adjustmentReplay.tx.id, "manual-adjustment-created-earlier-business-later");
 assert.deepEqual(adjustmentReplay.before, { ht: 216, fa: 0, of: 0 });
 assert.deepEqual(adjustmentReplay.after, { ht: 216, fa: 25, of: 249 });
+
+const backdatedAuditRows = sortAuditRowsByActualTime([
+  { id: "later-sale", timestamp: new Date("2026-10-03T14:08:46Z"), businessDate: new Date("2026-09-29T00:00:00Z") },
+  { id: "earlier-sale", timestamp: new Date("2026-09-29T15:48:19Z"), businessDate: new Date("2026-09-29T00:00:00Z") },
+  { id: "adjustment", timestamp: new Date("2026-09-30T12:19:24Z") },
+]);
+assert.deepEqual(backdatedAuditRows.map((row) => row.id), ["earlier-sale", "adjustment", "later-sale"]);
+
+const officeTransferAfterManualAdjustment: Transaction[] = [
+  {
+    id: "manual-adjustment-one-to-factory",
+    itemId: "62 LH",
+    category: "CUTTER M15",
+    type: "adjustment",
+    quantityChange: 1,
+    timestamp: new Date("2026-09-30T12:19:24Z"),
+    previousHTBalance: 0,
+    previousFABalance: 0,
+    previousOFBalance: 23,
+    newHTBalance: 0,
+    newFABalance: 1,
+    newOFBalance: 23,
+    user: { id: "demo", name: "Demo" },
+  } as Transaction,
+  {
+    id: "office-transfer-of-adjusted-unit",
+    itemId: "62 LH",
+    category: "CUTTER M15",
+    type: "office_transfer_created",
+    quantityChange: 1,
+    timestamp: new Date("2026-09-30T12:20:36Z"),
+    user: { id: "demo", name: "Demo" },
+  } as Transaction,
+  {
+    id: "october-sale-one",
+    itemId: "62 LH",
+    category: "CUTTER M15",
+    type: "sales",
+    quantityChange: -12,
+    timestamp: new Date("2026-10-03T14:08:46Z"),
+    businessDate: new Date("2026-10-01T00:00:00Z"),
+    user: { id: "demo", name: "Demo" },
+  } as Transaction,
+];
+
+const officeTransferReplay = replayBalanceHistory(officeTransferAfterManualAdjustment);
+assert.deepEqual(officeTransferReplay[0].after, { ht: 0, fa: 1, of: 23 });
+assert.deepEqual(officeTransferReplay[1].after, { ht: 0, fa: 0, of: 24 });
+assert.deepEqual(officeTransferReplay[2].after, { ht: 0, fa: 0, of: 12 });
+const duplicateSaleReplay = replayBalanceHistory([
+  ...officeTransferAfterManualAdjustment,
+  {
+    id: "second-recorded-sale",
+    itemId: "62 LH",
+    category: "CUTTER M15",
+    type: "sales",
+    quantityChange: -12,
+    timestamp: new Date("2026-10-03T14:09:51Z"),
+    businessDate: new Date("2026-10-01T00:00:00Z"),
+    user: { id: "demo", name: "Demo" },
+  } as Transaction,
+]);
+assert.deepEqual(duplicateSaleReplay.at(-1)?.after, { ht: 0, fa: 0, of: 0 });
+
+const temporarilyNegativeFactoryHistory: Transaction[] = [
+  {
+    id: "factory-opening-baseline",
+    itemId: "Negative Test Item",
+    category: "Demo",
+    type: "balance_baseline_accepted",
+    quantityChange: 0,
+    timestamp: new Date("2026-07-16T00:00:00Z"),
+    previousHTBalance: 0,
+    previousFABalance: 0,
+    previousOFBalance: 0,
+    newHTBalance: 0,
+    newFABalance: 0,
+    newOFBalance: 0,
+    user: { id: "demo", name: "Demo" },
+  } as Transaction,
+  {
+    id: "office-transfer-overdraws-factory",
+    itemId: "Negative Test Item",
+    category: "Demo",
+    type: "office_transfer_created",
+    quantityChange: 3,
+    timestamp: new Date("2026-07-17T00:00:00Z"),
+    user: { id: "demo", name: "Demo" },
+  } as Transaction,
+  {
+    id: "later-adjustment-hides-overdraw",
+    itemId: "Negative Test Item",
+    category: "Demo",
+    type: "adjustment",
+    quantityChange: 3,
+    timestamp: new Date("2026-07-18T00:00:00Z"),
+    previousHTBalance: 0,
+    previousFABalance: -3,
+    previousOFBalance: 3,
+    newHTBalance: 0,
+    newFABalance: 0,
+    newOFBalance: 3,
+    user: { id: "demo", name: "Demo" },
+  } as Transaction,
+];
+
+assert.equal(
+  findNewOrWorsenedNegativeBalanceReplayEntry(
+    temporarilyNegativeFactoryHistory,
+    temporarilyNegativeFactoryHistory
+  ),
+  undefined
+);
+const worsenedFactoryHistory = temporarilyNegativeFactoryHistory.map((tx) =>
+  tx.id === "office-transfer-overdraws-factory" ? { ...tx, quantityChange: 4 } : tx
+);
+assert.equal(
+  findNewOrWorsenedNegativeBalanceReplayEntry(
+    worsenedFactoryHistory,
+    temporarilyNegativeFactoryHistory
+  )?.tx.id,
+  "office-transfer-overdraws-factory"
+);
+
+const existingNegativeOfficeBalance: Transaction[] = [
+  {
+    id: "existing-office-overdraw",
+    itemId: "Changed Product",
+    category: "Chaser",
+    type: "sales",
+    quantityChange: -2,
+    timestamp: new Date("2026-08-01T10:00:00Z"),
+    user: { id: "demo", name: "Demo" },
+  } as Transaction,
+];
+const changedHeatTreatment = [
+  ...existingNegativeOfficeBalance,
+  {
+    id: "new-heat-treatment-row",
+    itemId: "Changed Product",
+    category: "Chaser",
+    type: "heat_treatment_created",
+    quantityChange: 5,
+    timestamp: new Date("2026-08-02T10:00:00Z"),
+    user: { id: "demo", name: "Demo" },
+  } as Transaction,
+];
+assert.equal(
+  findNewOrWorsenedNegativeBalanceReplayEntry(
+    changedHeatTreatment,
+    existingNegativeOfficeBalance,
+    new Set(["changed product::chaser"])
+  ),
+  undefined
+);
+
+const newOverdrawnTransfer: Transaction[] = [
+  {
+    id: "new-office-overdraw",
+    itemId: "Changed Product",
+    category: "Chaser",
+    type: "office_transfer_created",
+    quantityChange: 2,
+    timestamp: new Date("2026-08-02T10:00:00Z"),
+    user: { id: "demo", name: "Demo" },
+  } as Transaction,
+];
+assert.equal(
+  findNewOrWorsenedNegativeBalanceReplayEntry(
+    newOverdrawnTransfer,
+    [],
+    new Set(["changed product::chaser"])
+  )?.tx.id,
+  "new-office-overdraw"
+);
 
 const missingOpeningBalanceTransactions: Transaction[] = [
   {

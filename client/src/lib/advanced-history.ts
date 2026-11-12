@@ -19,7 +19,12 @@ import {
 } from "@/lib/balance-snapshots";
 export type { BalanceSnapshotSummary } from "@/lib/balance-snapshots";
 export { buildBalanceSnapshotItems, applyBalanceSnapshotToItems } from "@/lib/balance-snapshots";
-import { hasReplayStartingBaseline, replayBalanceHistory } from "@/lib/history-replay";
+import {
+  findNewOrWorsenedNegativeBalanceReplayEntry,
+  hasReplayStartingBaseline,
+  replayBalanceHistory,
+} from "@/lib/history-replay";
+import { getHeatTreatmentRebuildScope } from "@/lib/heat-treatment-rebuild-scope";
 import type { StockItem, Transaction } from "@/lib/types";
 
 type AdvancedTransactionType =
@@ -693,46 +698,24 @@ const areTransactionsMirrors = (srcTxs: Transaction[], targetTxs: Transaction[])
   return true;
 };
 
-const assertNoNegativeBalances = (txs: Transaction[], itemKeysToCheck: Set<string>) => {
-  const balancesByKey = new Map<string, { ht: number; fa: number; of: number }>();
+const assertNoNegativeBalances = (
+  txs: Transaction[],
+  originalTxs: Transaction[],
+  itemKeysToCheck: Set<string>
+) => {
+  const firstNegativeEntry = findNewOrWorsenedNegativeBalanceReplayEntry(
+    txs,
+    originalTxs,
+    itemKeysToCheck
+  );
+  if (!firstNegativeEntry) return;
 
-  for (const tx of txs.filter(isReplayableBalanceTransaction).sort(compareAdvancedTransactions)) {
-    const itemKey = toItemKey(tx.itemId, tx.category);
-    const current = balancesByKey.get(itemKey) || { ht: 0, fa: 0, of: 0 };
-
-    if (tx.type === "creation" || tx.type === "adjustment") {
-      current.ht = tx.newHTBalance || 0;
-      current.fa = tx.newFABalance || 0;
-      current.of = tx.newOFBalance || 0;
-    } else {
-      const appliedQty = Math.max(0, Math.abs(tx.quantityChange || 0));
-
-      if (tx.type === "heat_treatment_created") {
-        current.ht += appliedQty;
-      } else if (tx.type === "factory_transfer_created") {
-        current.ht -= appliedQty;
-        current.fa += appliedQty;
-      } else if (tx.type === "office_transfer_created") {
-        current.fa -= appliedQty;
-        current.of += appliedQty;
-      } else if (tx.type === "sales") {
-        current.of -= appliedQty;
-      }
-    }
-
-    balancesByKey.set(itemKey, current);
-  }
-
-  for (const itemKey of Array.from(itemKeysToCheck)) {
-    const finalBalances = balancesByKey.get(itemKey);
-    if (finalBalances && (finalBalances.ht < 0 || finalBalances.fa < 0 || finalBalances.of < 0)) {
-      const itemLabel = itemKey.split("::")[0];
-      const category = itemKey.split("::")[1] || "unknown";
-      throw new Error(
-        `Cannot save because ${itemLabel} (${category}) would have a negative balance.`
-      );
-    }
-  }
+  const { tx, after } = firstNegativeEntry;
+  const location = after.ht < 0 ? "heat treatment" : after.fa < 0 ? "factory" : "office";
+  const balance = after.ht < 0 ? after.ht : after.fa < 0 ? after.fa : after.of;
+  throw new Error(
+    `Cannot save because ${tx.itemId} (${tx.category}) would have a negative ${location} balance (${balance}) after this transaction.`
+  );
 };
 
 async function rebuildHeatTreatmentProcessDocs(
@@ -742,33 +725,24 @@ async function rebuildHeatTreatmentProcessDocs(
   affectedItemKeys?: Set<string>
 ) {
   const remainingAdvancedTxs = advancedTxs.filter((tx) => !txDeletes.includes(tx.id));
-  const touchedKeys = affectedItemKeys || new Set<string>();
-  const shouldLimitToAffectedItems = touchedKeys.size > 0;
-
-  const htTxs = remainingAdvancedTxs.filter((tx) => {
-    if (tx.type !== "heat_treatment_created") return false;
-    if (!shouldLimitToAffectedItems) return true;
-    return touchedKeys.has(toItemKey(tx.itemId, tx.category));
-  });
-
-  const factoryTxs = remainingAdvancedTxs.filter((tx) => {
-    if (tx.type !== "factory_transfer_created") return false;
-    if (!shouldLimitToAffectedItems) return true;
-    return touchedKeys.has(toItemKey(tx.itemId, tx.category));
-  });
-
-  if (!shouldLimitToAffectedItems && htTxs.length === 0 && factoryTxs.length === 0) {
-    for (const processDoc of context.processDocs) {
-      await deleteDoc(doc(db, "processes", processDoc.id));
-    }
-    return;
-  }
-
-  const existingProcessDocs = shouldLimitToAffectedItems
-    ? context.processDocs.filter((processDoc) =>
-        processDoc.items.some((item) => touchedKeys.has(toItemKey(item.itemName, item.category)))
-      )
-    : context.processDocs;
+  const scope = getHeatTreatmentRebuildScope(
+    remainingAdvancedTxs,
+    affectedItemKeys
+  );
+  const existingProcessDocs = context.processDocs.filter((processDoc) =>
+    scope.processIds.has(processDoc.id)
+  );
+  const htTxs = remainingAdvancedTxs.filter(
+    (tx) =>
+      tx.type === "heat_treatment_created" &&
+      (scope.processIds.has(tx.processId || "") ||
+        scope.itemKeys.has(toItemKey(tx.itemId, tx.category)))
+  );
+  const factoryTxs = remainingAdvancedTxs.filter(
+    (tx) =>
+      tx.type === "factory_transfer_created" &&
+      scope.itemKeys.has(toItemKey(tx.itemId, tx.category))
+  );
 
   const stockItemIdByKey = new Map(
     context.stockItems.map((item) => [toItemKey(item.name, item.category), item.id])
@@ -863,6 +837,8 @@ async function rebuildHeatTreatmentProcessDocs(
   }
 
   for (const [processId, group] of sortedHtGroups) {
+    if (!scope.processIds.has(processId)) continue;
+
     const remainingItems = remainingByProcess.get(processId) || [];
     if (remainingItems.length === 0) {
       if (existingProcessIds.has(processId)) {
@@ -870,6 +846,22 @@ async function rebuildHeatTreatmentProcessDocs(
       }
       continue;
     }
+
+    const existingProcessDoc = existingProcessDocs.find(
+      (processDoc) => processDoc.id === processId
+    );
+    const itemsAreUnchanged =
+      existingProcessDoc?.items.length === remainingItems.length &&
+      remainingItems.every((item, index) => {
+        const existingItem = existingProcessDoc.items[index];
+        return (
+          existingItem.itemId === item.itemId &&
+          existingItem.itemName === item.itemName &&
+          existingItem.category === item.category &&
+          existingItem.quantity === item.quantity
+        );
+      });
+    if (itemsAreUnchanged) continue;
 
     await setDoc(
       doc(db, "processes", processId),
@@ -884,6 +876,18 @@ async function rebuildHeatTreatmentProcessDocs(
       { merge: true }
     );
   }
+}
+
+export async function repairHeatTreatmentProcessBlocks(company: string) {
+  const context = await loadAdvancedContext(company);
+  const replayedTransactions = replayBalanceHistory(context.transactions).map(
+    (entry) => entry.tx
+  );
+  const advancedTxs = replayedTransactions.filter((tx) =>
+    ADVANCED_TYPES.includes(tx.type as AdvancedTransactionType)
+  );
+
+  await rebuildHeatTreatmentProcessDocs(context, advancedTxs, []);
 }
 
 // Find mirror follow-up transactions for a heat treatment
@@ -1119,6 +1123,7 @@ export async function saveAdvancedGroupEdit(input: EditableGroupInput) {
       ...context.transactions.filter((tx) => !existingTxIds.has(tx.id)),
       ...proposedTxs,
     ],
+    context.transactions,
     affectedItemKeys
   );
 

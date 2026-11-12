@@ -19,6 +19,7 @@ import {
   type AdvancedTransactionAuditRow,
   type BalanceSnapshotSummary,
 } from "@/lib/advanced-history";
+import { sortAuditRowsByActualTime } from "@/lib/history-replay";
 import { useEffect, useMemo, useState } from "react";
 import { format } from "date-fns";
 import { ChevronDown, Wrench, Search, FileText, RotateCcw, CheckCircle2 } from "lucide-react";
@@ -254,7 +255,7 @@ export default function Profile() {
     const startTime = auditStartDate ? new Date(`${auditStartDate}T00:00:00`).getTime() : null;
     const endTime = auditEndDate ? new Date(`${auditEndDate}T23:59:59.999`).getTime() : null;
 
-    return auditRows
+    const filteredRows = auditRows
       .filter((row) => auditTypeFilter === "all" || row.type === auditTypeFilter)
       .filter((row) => {
         const sortTime = getSortDate(row).getTime();
@@ -262,11 +263,7 @@ export default function Profile() {
         if (endTime !== null && sortTime > endTime) return false;
         return true;
       })
-      .sort((a, b) => {
-        const dateCompare = getSortDate(a).getTime() - getSortDate(b).getTime();
-        if (dateCompare !== 0) return dateCompare;
-        return a.timestamp.getTime() - b.timestamp.getTime();
-      });
+    return sortAuditRowsByActualTime(filteredRows);
   }, [auditEndDate, auditRows, auditSortMode, auditStartDate, auditTypeFilter]);
 
   useEffect(() => {
@@ -767,7 +764,7 @@ export default function Profile() {
                 <div className="space-y-3">
                   <div className="grid gap-3 md:grid-cols-4">
                     <div className="space-y-2">
-                      <Label>Sort By</Label>
+                      <Label>Filter Date By</Label>
                       <select
                         className="h-10 w-full rounded-md border border-input bg-white px-3 text-sm shadow-sm"
                         value={auditSortMode}

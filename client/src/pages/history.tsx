@@ -154,8 +154,15 @@ export default function HistoryPage() {
     return format(date, "MMM dd, yyyy");
   };
 
-  const getStockItemIdFromTransaction = (itemName: string, category: string) =>
-    items.find((item) => getItemKey(item.name, item.category) === getItemKey(itemName, category))?.id || "";
+  const getStockItemIdFromTransaction = (itemName: string, category: string) => {
+    const exactMatch = items.find((item) => item.name === itemName && item.category === category);
+    if (exactMatch) return exactMatch.id;
+
+    const normalizedMatches = items.filter(
+      (item) => getItemKey(item.name, item.category) === getItemKey(itemName, category)
+    );
+    return normalizedMatches.length === 1 ? normalizedMatches[0].id : "";
+  };
 
   const findStockItemDocId = async (itemName: string, category: string) => {
     const snapshot = await getDocs(

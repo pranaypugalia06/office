@@ -21,7 +21,11 @@ import { useAuth } from "@/lib/auth";
 import { collection, addDoc, Timestamp, deleteDoc, doc, updateDoc, getDocs, query, where, onSnapshot, getDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useToast } from "@/hooks/use-toast";
-import { createAdjustmentTransaction, recalculateAdvancedStateOptimized } from "@/lib/advanced-history";
+import {
+  createAdjustmentTransaction,
+  recalculateAdvancedStateOptimized,
+  repairHeatTreatmentProcessBlocks,
+} from "@/lib/advanced-history";
 import { capitalize, naturalCompare } from "@/lib/utils";
 import { format } from "date-fns";
 
@@ -196,6 +200,14 @@ export default function ProcessPage() {
       console.error("Error setting up processes listener:", error);
     }
   }, []);
+
+  useEffect(() => {
+    if (!user?.company) return;
+
+    repairHeatTreatmentProcessBlocks(user.company).catch((error) => {
+      console.error("Failed to repair heat treatment process blocks:", error);
+    });
+  }, [user?.company]);
 
   // Generate serial number when modal opens
   const handleProcessClick = (processType: "heat_treatment" | "factory_transfer" | "office_transfer") => {

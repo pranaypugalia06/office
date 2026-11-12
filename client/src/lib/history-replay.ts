@@ -19,6 +19,9 @@ export interface ReplayBalanceEntry {
   data: Record<string, any>;
 }
 
+export const sortAuditRowsByActualTime = <T extends { timestamp: Date }>(rows: T[]): T[] =>
+  [...rows].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+
 const REPLAY_TYPES: ReplayTransactionType[] = [
   "creation",
   "balance_baseline_accepted",
@@ -230,4 +233,26 @@ export const replayBalanceHistory = (transactions: Transaction[]): ReplayBalance
   }
 
   return rows;
+};
+
+export const findNewOrWorsenedNegativeBalanceReplayEntry = (
+  transactions: Transaction[],
+  originalTransactions: Transaction[],
+  itemKeysToCheck?: Set<string>
+): ReplayBalanceEntry | undefined => {
+  const originalEntriesById = new Map(
+    replayBalanceHistory(originalTransactions).map((entry) => [entry.tx.id, entry])
+  );
+
+  return replayBalanceHistory(transactions).find((entry) => {
+    if (itemKeysToCheck && !itemKeysToCheck.has(entry.itemKey)) return false;
+
+    const original = originalEntriesById.get(entry.tx.id);
+    const baseline = original?.after ?? entry.before;
+    return (
+      (entry.after.ht < 0 && entry.after.ht < baseline.ht) ||
+      (entry.after.fa < 0 && entry.after.fa < baseline.fa) ||
+      (entry.after.of < 0 && entry.after.of < baseline.of)
+    );
+  });
 };
